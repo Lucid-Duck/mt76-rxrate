@@ -1,0 +1,232 @@
+From 72ffbdc54427a8e82741a8c59ae8b9a6b8579dfe Mon Sep 17 00:00:00 2001
+From: Devin Wittmayer <devinwittmayer@gmail.com>
+Date: Sat, 4 Apr 2026 19:52:38 -0700
+Subject: [PATCH] wifi: mt76: mt792x: report last RX rate in station statistics
+
+The mt7921 and mt7925 drivers have never populated
+NL80211_STA_INFO_RX_BITRATE in sta_statistics, so `iw dev wlan0 station
+dump` and other nl80211 consumers have always omitted the "rx bitrate"
+line on every MT7921, MT7922 and MT7925 device. Dead function
+prototypes (mt7921_mcu_get_rx_rate in mt7921/mt7921.h, and the same in
+mt7925/mt7925.h) have sat in the headers unimplemented for years,
+hinting at an MCU-query approach that was never finished.
+
+The mt7915 sibling driver populates this field via MCU_EXT_CMD
+PHY_STAT_INFO, but that command returns an error response on mt792x
+firmware (the firmware echoes the command opcode with a non-zero
+status byte and no payload), so the mt7915 approach cannot be ported
+directly. Fortunately the PRXV group of every hardware RX descriptor
+already carries the rate information:
+mt76_connac2_mac_fill_rx_rate() (mt7921) and mt7925_mac_fill_rx_rate()
+(mt7925) decode it into struct mt76_rx_status on every received frame
+for radiotap and monitor-mode output. All that was missing was a
+per-station cache of the last decoded rate for sta_statistics to read.
+
+Add a rate_info rx_rate field to struct mt792x_link_sta and a small
+shared helper mt792x_mac_update_rx_rate() in mt792x_mac.c that
+translates the mt76_rx_status fields into rate_info and stores the
+result. Call the helper from both chipset RX paths right after the
+existing fill_rx_rate step, and read it from mt792x_sta_statistics()
+to populate sinfo->rxrate. Delete the stale mt7921_mcu_get_rx_rate
+and mt7925_mcu_get_rx_rate prototypes now that a working
+implementation is in place.
+
+No new MCU round-trips, no new firmware commands. The per-RX cost is
+one struct copy plus a small switch in an already-hot path. The read
+path is a single field access.
+
+Tested on Alfa AWUS036AXML (MT7921AU USB) against a tri-band Wi-Fi 6
+AP:
+
+  2.4 GHz ch 1 (20 MHz):
+    idle:  1.0 Mbit/s (CCK basic rate)
+    load:  286.7 Mbit/s HE-MCS 11 NSS 2
+
+  5 GHz ch 100 DFS (80 MHz):
+    idle:  6.0 Mbit/s (OFDM basic rate)
+    load:  1200.9 Mbit/s HE-MCS 11 NSS 2
+
+  6 GHz ch 5 (80 MHz):
+    idle:  6.0 Mbit/s
+    load:  1200.9 Mbit/s HE-MCS 11 NSS 2
+
+A 60-second iperf3 downlink at 715 Mbit/s with 300 station_dump
+samples at 200 ms intervals caught 5 distinct rate values
+(HE-MCS 9/10/11 with both GI variants), confirming the cache tracks
+rate-control decisions frame by frame. dmesg clean across assoc and
+disassoc cycles, module reload cycles, and concurrent sta_statistics
+queries.
+
+The HT and VHT encoding paths in mt792x_mac_update_rx_rate() mirror
+the pattern used by mt76_connac2_mac_fill_txs() for the TX rate but
+were not exercised empirically on the test AP (which only negotiates
+HE with Wi-Fi 6 clients).
+
+Signed-off-by: Devin Wittmayer <devinwittmayer@gmail.com>
+---
+ .../net/wireless/mediatek/mt76/mt7921/mac.c   |  3 ++
+ .../wireless/mediatek/mt76/mt7921/mt7921.h    |  2 -
+ .../net/wireless/mediatek/mt76/mt7925/mac.c   |  3 ++
+ .../wireless/mediatek/mt76/mt7925/mt7925.h    |  2 -
+ drivers/net/wireless/mediatek/mt76/mt792x.h   |  9 ++++
+ .../net/wireless/mediatek/mt76/mt792x_core.c  | 11 +++++
+ .../net/wireless/mediatek/mt76/mt792x_mac.c   | 43 +++++++++++++++++++
+ 7 files changed, 69 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
+index 03b4960..cc77be2 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
+@@ -346,6 +346,9 @@ mt7921_mac_fill_rx(struct mt792x_dev *dev, struct sk_buff *skb)
+ 		if (ret < 0)
+ 			return ret;
+ 
++		if (mlink)
++			mt792x_mac_update_rx_rate(mlink, status, sband);
++
+ 		if (rxd1 & MT_RXD1_NORMAL_GROUP_5) {
+ 			rxd += 6;
+ 			if ((u8 *)rxd - skb->data >= skb->len)
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/mt7921.h b/drivers/net/wireless/mediatek/mt76/mt7921/mt7921.h
+index 83fc7f4..c252d0f 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7921/mt7921.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7921/mt7921.h
+@@ -198,8 +198,6 @@ int mt7921_mcu_sta_update(struct mt792x_dev *dev, struct ieee80211_sta *sta,
+ int mt7921_mcu_set_chan_info(struct mt792x_phy *phy, int cmd);
+ int mt7921_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_vif *vif);
+ int mt7921_mcu_set_eeprom(struct mt792x_dev *dev);
+-int mt7921_mcu_get_rx_rate(struct mt792x_phy *phy, struct ieee80211_vif *vif,
+-			   struct ieee80211_sta *sta, struct rate_info *rate);
+ int mt7921_mcu_fw_log_2_host(struct mt792x_dev *dev, u8 ctrl);
+ void mt7921_mcu_rx_event(struct mt792x_dev *dev, struct sk_buff *skb);
+ int mt7921_mcu_set_rxfilter(struct mt792x_dev *dev, u32 fif,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+index 0d94359..e9f3d5c 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -534,6 +534,9 @@ mt7925_mac_fill_rx(struct mt792x_dev *dev, struct sk_buff *skb)
+ 		ret = mt7925_mac_fill_rx_rate(dev, status, sband, rxv, &mode);
+ 		if (ret < 0)
+ 			return ret;
++
++		if (mlink)
++			mt792x_mac_update_rx_rate(mlink, status, sband);
+ 	}
+ 
+ 	amsdu_info = FIELD_GET(MT_RXD4_NORMAL_PAYLOAD_FORMAT, rxd4);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+index 6b9bf1b..be32032 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+@@ -255,8 +255,6 @@ int mt7925_mcu_sta_update(struct mt792x_dev *dev,
+ int mt7925_mcu_set_chan_info(struct mt792x_phy *phy, u16 tag);
+ int mt7925_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_bss_conf *bss_conf);
+ int mt7925_mcu_set_eeprom(struct mt792x_dev *dev);
+-int mt7925_mcu_get_rx_rate(struct mt792x_phy *phy, struct ieee80211_vif *vif,
+-			   struct ieee80211_sta *sta, struct rate_info *rate);
+ int mt7925_mcu_fw_log_2_host(struct mt792x_dev *dev, u8 ctrl);
+ void mt7925_mcu_rx_event(struct mt792x_dev *dev, struct sk_buff *skb);
+ int mt7925_mcu_chip_config(struct mt792x_dev *dev, const char *cmd);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt792x.h b/drivers/net/wireless/mediatek/mt76/mt792x.h
+index 8388638..69ea256 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt792x.h
++++ b/drivers/net/wireless/mediatek/mt76/mt792x.h
+@@ -108,6 +108,12 @@ struct mt792x_link_sta {
+ 	struct mt792x_sta *sta;
+ 
+ 	struct ieee80211_link_sta *pri_link;
++
++	/* Last RX rate decoded from the hardware PRXV on each received frame.
++	 * Populated by the RX path in mt7921/mt7925, read by sta_statistics
++	 * for NL80211_STA_INFO_RX_BITRATE reporting to `iw station dump`.
++	 */
++	struct rate_info rx_rate;
+ };
+ 
+ struct mt792x_sta {
+@@ -371,6 +377,9 @@ void mt792x_reset(struct mt76_dev *mdev);
+ void mt792x_update_channel(struct mt76_phy *mphy);
+ void mt792x_mac_reset_counters(struct mt792x_phy *phy);
+ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band);
++void mt792x_mac_update_rx_rate(struct mt792x_link_sta *mlink,
++			       struct mt76_rx_status *status,
++			       struct ieee80211_supported_band *sband);
+ void mt792x_mac_assoc_rssi(struct mt792x_dev *dev, struct sk_buff *skb);
+ struct mt76_wcid *mt792x_rx_get_wcid(struct mt792x_dev *dev, u16 idx,
+ 				     bool unicast);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt792x_core.c b/drivers/net/wireless/mediatek/mt76/mt792x_core.c
+index f2ed16f..8dfd331 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt792x_core.c
++++ b/drivers/net/wireless/mediatek/mt76/mt792x_core.c
+@@ -598,6 +598,17 @@ void mt792x_sta_statistics(struct ieee80211_hw *hw,
+ 
+ 	sinfo->avg_ack_signal = -(s8)ewma_avg_signal_read(&msta->deflink.avg_ack_signal);
+ 	sinfo->filled |= BIT_ULL(NL80211_STA_INFO_ACK_SIGNAL_AVG);
++
++	/* RX rate cached by the RX path (mt792x_mac_update_rx_rate) whenever a
++	 * frame is received with a resolved wcid. Populating sinfo->rxrate
++	 * makes NL80211_STA_INFO_RX_BITRATE visible in `iw station dump` and
++	 * other nl80211 consumers -- a long-standing gap on MT7921 / MT7922 /
++	 * MT7925 devices that had no RX rate reporting path at all.
++	 */
++	if (msta->deflink.rx_rate.flags || msta->deflink.rx_rate.legacy) {
++		sinfo->rxrate = msta->deflink.rx_rate;
++		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_RX_BITRATE);
++	}
+ }
+ EXPORT_SYMBOL_GPL(mt792x_sta_statistics);
+ 
+diff --git a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c b/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
+index 71dec93..673f6d7 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
+@@ -311,6 +311,49 @@ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band)
+ }
+ EXPORT_SYMBOL_GPL(mt792x_mac_init_band);
+ 
++/* Cache the last RX rate decoded from the hardware PRXV into the per-link
++ * station struct. Called from the chipset RX path after
++ * mt76_connac2_mac_fill_rx_rate() (mt7921) or mt7925_mac_fill_rx_rate()
++ * (mt7925) have populated @status. The cached value is read by
++ * mt792x_sta_statistics() to fill NL80211_STA_INFO_RX_BITRATE.
++ */
++void mt792x_mac_update_rx_rate(struct mt792x_link_sta *mlink,
++			       struct mt76_rx_status *status,
++			       struct ieee80211_supported_band *sband)
++{
++	struct rate_info *rx = &mlink->rx_rate;
++
++	memset(rx, 0, sizeof(*rx));
++	rx->nss = status->nss;
++	rx->bw = status->bw;
++
++	switch (status->encoding) {
++	case RX_ENC_LEGACY:
++		if (status->rate_idx < sband->n_bitrates)
++			rx->legacy = sband->bitrates[status->rate_idx].bitrate;
++		break;
++	case RX_ENC_HT:
++		rx->mcs = status->rate_idx;
++		rx->flags = RATE_INFO_FLAGS_MCS;
++		if (status->enc_flags & RX_ENC_FLAG_SHORT_GI)
++			rx->flags |= RATE_INFO_FLAGS_SHORT_GI;
++		break;
++	case RX_ENC_VHT:
++		rx->mcs = status->rate_idx;
++		rx->flags = RATE_INFO_FLAGS_VHT_MCS;
++		if (status->enc_flags & RX_ENC_FLAG_SHORT_GI)
++			rx->flags |= RATE_INFO_FLAGS_SHORT_GI;
++		break;
++	case RX_ENC_HE:
++		rx->mcs = status->rate_idx;
++		rx->flags = RATE_INFO_FLAGS_HE_MCS;
++		rx->he_gi = status->he_gi;
++		rx->he_dcm = status->he_dcm;
++		break;
++	}
++}
++EXPORT_SYMBOL_GPL(mt792x_mac_update_rx_rate);
++
+ void mt792x_pm_wake_work(struct work_struct *work)
+ {
+ 	struct mt792x_dev *dev;
