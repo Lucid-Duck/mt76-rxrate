@@ -25,11 +25,12 @@ per-station cache of the last decoded rate for sta_statistics to read.
 Add a rate_info rx_rate field to struct mt792x_link_sta and a small
 shared helper mt792x_mac_update_rx_rate() in mt792x_mac.c that
 translates the mt76_rx_status fields into rate_info and stores the
-result. Call the helper from both chipset RX paths right after the
-existing fill_rx_rate step, and read it from mt792x_sta_statistics()
-to populate sinfo->rxrate. Delete the stale mt7921_mcu_get_rx_rate
-and mt7925_mcu_get_rx_rate prototypes now that a working
-implementation is in place.
+result. The helper covers all five encoding types: Legacy, HT, VHT,
+HE, and EHT. Call the helper from both chipset RX paths right after
+the existing fill_rx_rate step, and read it from
+mt792x_sta_statistics() to populate sinfo->rxrate. Delete the stale
+mt7921_mcu_get_rx_rate and mt7925_mcu_get_rx_rate prototypes now that
+a working implementation is in place.
 
 No new MCU round-trips, no new firmware commands. The per-RX cost is
 one struct copy plus a small switch in an already-hot path. The read
@@ -57,6 +58,10 @@ rate-control decisions frame by frame. dmesg clean across assoc and
 disassoc cycles, module reload cycles, and concurrent sta_statistics
 queries.
 
+Independently confirmed on Netgear A8000 (MT7925U USB) on kernel
+7.0-rc7, which exercises the EHT path: rx bitrate reported as
+1296.7 Mbit/s EHT-MCS 12 NSS 2 on 5 GHz 80 MHz.
+
 The HT and VHT encoding paths in mt792x_mac_update_rx_rate() mirror
 the pattern used by mt76_connac2_mac_fill_txs() for the TX rate but
 were not exercised empirically on the test AP (which only negotiates
@@ -70,8 +75,8 @@ Signed-off-by: Devin Wittmayer <devinwittmayer@gmail.com>
  .../wireless/mediatek/mt76/mt7925/mt7925.h    |  2 -
  drivers/net/wireless/mediatek/mt76/mt792x.h   |  9 ++++
  .../net/wireless/mediatek/mt76/mt792x_core.c  | 11 +++++
- .../net/wireless/mediatek/mt76/mt792x_mac.c   | 43 +++++++++++++++++++
- 7 files changed, 69 insertions(+), 4 deletions(-)
+ .../net/wireless/mediatek/mt76/mt792x_mac.c   | 48 +++++++++++++++++++
+ 7 files changed, 74 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
 index 03b4960..cc77be2 100644
@@ -180,7 +185,7 @@ diff --git a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c b/drivers/net/wirel
 index 71dec93..673f6d7 100644
 --- a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
 +++ b/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
-@@ -311,6 +311,49 @@ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band)
+@@ -311,6 +311,54 @@ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band)
  }
  EXPORT_SYMBOL_GPL(mt792x_mac_init_band);
  
@@ -222,6 +227,12 @@ index 71dec93..673f6d7 100644
 +		rx->flags = RATE_INFO_FLAGS_HE_MCS;
 +		rx->he_gi = status->he_gi;
 +		rx->he_dcm = status->he_dcm;
++		break;
++	case RX_ENC_EHT:
++		rx->mcs = status->rate_idx;
++		rx->flags = RATE_INFO_FLAGS_EHT_MCS;
++		rx->eht_gi = status->eht.gi;
++		rx->eht_ru_alloc = status->eht.ru;
 +		break;
 +	}
 +}

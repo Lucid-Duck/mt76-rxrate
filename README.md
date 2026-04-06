@@ -1,6 +1,6 @@
 # mt76-rxrate
 
-A small patch for the Linux `mt76` wireless driver that makes MediaTek Wi-Fi 6 devices finally report the RX bitrate to `iw dev wlan0 station dump` and friends.
+A small patch for the Linux `mt76` wireless driver that makes MediaTek Wi-Fi 6/6E/7 devices finally report the RX bitrate to `iw dev wlan0 station dump` and friends.
 
 Looking for community testers before sending this upstream.
 
@@ -73,7 +73,9 @@ The hardware already decodes rate information into every RX descriptor's PRXV gr
 
 No new MCU round-trips. No new firmware commands. No changes to the hot RX path beyond one struct copy and a small switch statement. The reader side is a single field access. Matches the same pattern `iwlwifi`, `ath11k`, and `mt7915` already use for RX rate reporting.
 
-The total patch is 69 insertions, 4 deletions, 7 files touched.
+The helper covers all five encoding types (Legacy, HT, VHT, HE, EHT), so it handles MT7925's Wi-Fi 7 EHT frames as well as the older encodings on MT7921/MT7922.
+
+The total patch is 74 insertions, 4 deletions, 7 files touched.
 
 ## Hardware tested so far
 
@@ -82,14 +84,15 @@ The total patch is 69 insertions, 4 deletions, 7 files touched.
 | MT7921AU (Alfa AWUS036AXML) | USB 3.0 | 2.4 GHz | ch 1, 20 MHz | Works: idle 1.0 Mbit/s CCK, load 286.7 Mbit/s HE-MCS 11 NSS 2 |
 | MT7921AU (Alfa AWUS036AXML) | USB 3.0 | 5 GHz | ch 100 DFS, 80 MHz | Works: idle 6.0 Mbit/s OFDM, load 1200.9 Mbit/s HE-MCS 11 NSS 2 |
 | MT7921AU (Alfa AWUS036AXML) | USB 3.0 | 6 GHz | ch 5, 80 MHz | Works: idle 6.0 Mbit/s, load 1200.9 Mbit/s HE-MCS 11 NSS 2 |
+| MT7925U (Netgear A8000, 0846:9072) | USB 3.0 | 5 GHz | ch 36, 80 MHz | Works: 1296.7 Mbit/s EHT-MCS 12 NSS 2 (Wi-Fi 7 / EHT path) |
 
-Stress tested: 60-second iperf3 at 715 Mbit/s with 300 concurrent `station dump` samples at 200 ms intervals caught 5 distinct rate values including real-time rate control decisions (HE-MCS 9/10/11 with both GI variants). 5x assoc/disassoc cycles, 3x module reload cycles, 5 concurrent station-dump workers firing 250 queries. Zero kernel warnings, zero crashes, zero races.
+Stress tested (MT7921AU): 60-second iperf3 at 715 Mbit/s with 300 concurrent `station dump` samples at 200 ms intervals caught 5 distinct rate values including real-time rate control decisions (HE-MCS 9/10/11 with both GI variants). 5x assoc/disassoc cycles, 3x module reload cycles, 5 concurrent station-dump workers firing 250 queries. Zero kernel warnings, zero crashes, zero races.
 
 **Looking for confirmations on:**
 
 - MT7921 PCIe laptop cards (I only have the USB variant)
 - MT7922 (the slightly newer revision of mt7921)
-- MT7925 (the Wi-Fi 7 / Wi-Fi 6E sibling)
+- ~~MT7925 (the Wi-Fi 7 / Wi-Fi 6E sibling)~~ -- confirmed by satmandu on MT7925U
 - Any SKU that enumerates at an unusual VID:PID
 
 Please add your results to [RESULTS.md](RESULTS.md) via a PR or open an issue.
