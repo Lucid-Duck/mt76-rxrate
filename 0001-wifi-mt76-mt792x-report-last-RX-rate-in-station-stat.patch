@@ -75,8 +75,8 @@ Signed-off-by: Devin Wittmayer <devinwittmayer@gmail.com>
  .../wireless/mediatek/mt76/mt7925/mt7925.h    |  2 -
  drivers/net/wireless/mediatek/mt76/mt792x.h   |  9 ++++
  .../net/wireless/mediatek/mt76/mt792x_core.c  | 11 +++++
- .../net/wireless/mediatek/mt76/mt792x_mac.c   | 48 +++++++++++++++++++
- 7 files changed, 74 insertions(+), 4 deletions(-)
+ .../net/wireless/mediatek/mt76/mt792x_mac.c   | 49 +++++++++++++++++++
+ 7 files changed, 75 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/net/wireless/mediatek/mt76/mt7921/mac.c b/drivers/net/wireless/mediatek/mt76/mt7921/mac.c
 index 03b4960..cc77be2 100644
@@ -185,7 +185,7 @@ diff --git a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c b/drivers/net/wirel
 index 71dec93..673f6d7 100644
 --- a/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
 +++ b/drivers/net/wireless/mediatek/mt76/mt792x_mac.c
-@@ -311,6 +311,54 @@ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band)
+@@ -311,6 +311,55 @@ void mt792x_mac_init_band(struct mt792x_dev *dev, u8 band)
  }
  EXPORT_SYMBOL_GPL(mt792x_mac_init_band);
  
