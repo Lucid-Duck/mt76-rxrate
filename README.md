@@ -75,7 +75,7 @@ No new MCU round-trips. No new firmware commands. No changes to the hot RX path 
 
 The helper covers all five encoding types (Legacy, HT, VHT, HE, EHT), so it handles MT7925's Wi-Fi 7 EHT frames as well as the older encodings on MT7921/MT7922.
 
-The total patch is 74 insertions, 4 deletions, 7 files touched.
+The total patch is 75 insertions, 4 deletions, 7 files touched.
 
 ## Hardware tested so far
 
